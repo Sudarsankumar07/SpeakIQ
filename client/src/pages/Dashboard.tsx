@@ -153,7 +153,7 @@ export const Dashboard: React.FC = () => {
                 />
               </div>
               <p className="text-xs text-slate-500 mt-2">
-                Resets hourly. Auto-falls back to Gemini 2.5 when exhausted.
+                Resets hourly. Auto-falls back to unlimited Gemini 2.5 when exhausted (never blocked).
               </p>
             </div>
 
@@ -164,18 +164,18 @@ export const Dashboard: React.FC = () => {
                   <span className="font-bold text-slate-900">Gemini 2.5 (Economy)</span>
                   <span className="text-xs text-slate-500 ml-2">(Fast & Short Responses)</span>
                 </div>
-                <span className="text-sm font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md">
-                  {quotas.g25Remaining} / {quotas.g25Limit} remaining
+                <span className="text-xs font-bold text-emerald-600 bg-emerald-50 border border-emerald-100 px-2.5 py-0.5 rounded-full">
+                  Unlimited
                 </span>
               </div>
               <div className="w-full bg-slate-100 h-3.5 rounded-full overflow-hidden">
                 <div
-                  className="bg-gradient-to-r from-cyan-400 to-cyan-500 h-full rounded-full transition-all duration-500"
-                  style={{ width: `${(quotas.g25Remaining / quotas.g25Limit) * 100}%` }}
+                  className="bg-gradient-to-r from-emerald-400 to-emerald-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: '100%' }}
                 />
               </div>
               <p className="text-xs text-slate-500 mt-2">
-                Resets hourly. Used directly for transcripts &lt; 100 words.
+                Unlimited usage. Active as fallback model and for responses &lt; 100 words.
               </p>
             </div>
           </div>

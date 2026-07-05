@@ -2,13 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { toast } from 'react-hot-toast';
-import { Mic, MicOff, AlertCircle, Send, ArrowLeft, Edit3, Play, Pause } from 'lucide-react';
-
-// Declare Web Speech API types for TypeScript
-interface IWindow extends Window {
-  SpeechRecognition?: any;
-  webkitSpeechRecognition?: any;
-}
+import { Mic, MicOff, AlertCircle, Send, ArrowLeft, Play, Pause } from 'lucide-react';
 
 export const SpeakingScreen: React.FC = () => {
   const location = useLocation();
@@ -18,8 +12,6 @@ export const SpeakingScreen: React.FC = () => {
   // State Variables
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [isEditing, setIsEditing] = useState(false);
   const [timer, setTimer] = useState(0);
   const [preferredModel, setPreferredModel] = useState<'gemini-3.5' | 'gemini-2.5'>('gemini-3.5');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -27,65 +19,10 @@ export const SpeakingScreen: React.FC = () => {
   const [audioBase64, setAudioBase64] = useState<string | null>(null);
 
   // Refs
-  const recognitionRef = useRef<any>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const timerIntervalRef = useRef<any>(null);
-
-  // Initialize Speech Recognition
-  useEffect(() => {
-    const { SpeechRecognition, webkitSpeechRecognition } = window as IWindow;
-    const SpeechRecObj = SpeechRecognition || webkitSpeechRecognition;
-
-    if (!SpeechRecObj) {
-      toast.error('Web Speech API is not supported in this browser. Please use Google Chrome or Microsoft Edge.');
-      return;
-    }
-
-    const rec = new SpeechRecObj();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = 'en-US';
-
-    rec.onresult = (event: any) => {
-      let accumulatedTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          accumulatedTranscript += event.results[i][0].transcript + ' ';
-        }
-      }
-      if (accumulatedTranscript) {
-        setTranscript((prev) => prev + accumulatedTranscript);
-      }
-    };
-
-    rec.onerror = (event: any) => {
-      console.error('Speech recognition error:', event.error);
-      if (event.error === 'not-allowed') {
-        toast.error('Microphone access denied. Please check browser permissions.');
-        stopRecording();
-      }
-    };
-
-    rec.onend = () => {
-      // SpeechRecognition automatically restarts or stops when paused
-    };
-
-    recognitionRef.current = rec;
-
-    return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
-      }
-      if (timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current);
-      }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, []);
 
   // Timer Management
   useEffect(() => {
@@ -105,11 +42,19 @@ export const SpeakingScreen: React.FC = () => {
     };
   }, [isRecording, isPaused]);
 
+  // Clean up media resources on unmount
+  useEffect(() => {
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
+
   const startRecording = async () => {
-    if (!recognitionRef.current) {
-      toast.error('Speech recognition is not initialized.');
-      return;
-    }
     try {
       // 1. Initialize Media Recorder
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -140,17 +85,15 @@ export const SpeakingScreen: React.FC = () => {
       };
 
       // 2. Clear states and start capturing
-      setTranscript('');
       setAudioUrl(null);
       setAudioBase64(null);
       setTimer(0);
       setIsPaused(false);
 
       mediaRecorder.start();
-      recognitionRef.current.start();
       setIsRecording(true);
 
-      toast.success('Listening and recording audio... Start speaking!');
+      toast.success('Microphone active. Start speaking!');
     } catch (err: any) {
       console.error('Error starting audio recording:', err);
       toast.error('Could not access microphone: ' + (err.message || 'Permission denied'));
@@ -161,9 +104,6 @@ export const SpeakingScreen: React.FC = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.pause();
     }
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
     setIsPaused(true);
     toast.success('Recording paused');
   };
@@ -172,9 +112,6 @@ export const SpeakingScreen: React.FC = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
       mediaRecorderRef.current.resume();
     }
-    if (recognitionRef.current) {
-      recognitionRef.current.start();
-    }
     setIsPaused(false);
     toast.success('Recording resumed');
   };
@@ -182,9 +119,6 @@ export const SpeakingScreen: React.FC = () => {
   const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
-    }
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
     }
     
     // Stop all media tracks to release hardware
@@ -203,11 +137,9 @@ export const SpeakingScreen: React.FC = () => {
     return `${mins}:${secs}`;
   };
 
-  const wordCount = transcript.trim().split(/\s+/).filter(Boolean).length;
-
   const handleSubmit = async () => {
-    if (wordCount === 0) {
-      toast.error('Please record or enter a speaking response first');
+    if (!audioBase64) {
+      toast.error('Please record your response first');
       return;
     }
 
@@ -215,9 +147,9 @@ export const SpeakingScreen: React.FC = () => {
     try {
       const response = await api.post('/evaluation', {
         topic,
-        transcript,
         model: preferredModel,
-        audio: audioBase64, // Send the base64 audio string to the backend
+        audio: audioBase64, // Send base64 audio
+        duration: timer,    // Send recorded duration in seconds
       });
 
       toast.success('Evaluation completed!');
@@ -292,7 +224,7 @@ export const SpeakingScreen: React.FC = () => {
             ) : isPaused ? (
               <p className="text-sm text-amber-500 font-bold animate-pulse">Recording Paused</p>
             ) : (
-              <p className="text-sm text-slate-400 font-medium">Click the microphone to start recording</p>
+              <p className="text-sm text-slate-400 font-medium">Click the microphone to start recording your response</p>
             )}
           </div>
 
@@ -322,20 +254,11 @@ export const SpeakingScreen: React.FC = () => {
             </button>
           </div>
 
-          {/* Timer and Word Count display */}
+          {/* Timer display */}
           <div className="flex gap-8 mt-8">
             <div className="text-center">
               <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Duration</span>
-              <p className="text-2xl font-black text-slate-800 mt-1">{formatTimer(timer)}</p>
-            </div>
-            <div className="h-10 w-px bg-slate-200" />
-            <div className="text-center">
-              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Words spoken</span>
-              <p className={`text-2xl font-black mt-1 ${
-                wordCount >= 100 && wordCount <= 200 ? 'text-emerald-600' : 'text-slate-800'
-              }`}>
-                {wordCount}
-              </p>
+              <p className="text-3xl font-black text-slate-800 mt-1">{formatTimer(timer)}</p>
             </div>
           </div>
 
@@ -350,65 +273,37 @@ export const SpeakingScreen: React.FC = () => {
           )}
 
           {/* Intelligent routing hint info */}
-          <div className="mt-6 flex items-start gap-2 max-w-md bg-slate-50 border border-slate-100 rounded-xl p-3 text-slate-500 text-xs">
-            <AlertCircle className="h-4 w-4 text-indigo-500 flex-shrink-0 mt-0.5" />
-            <div>
-              <span className="font-semibold text-slate-600">Smart routing active</span>: 
-              {wordCount < 100 ? (
-                <span> Inputs &lt; 100 words route directly to <strong>Gemini 2.5</strong>. Speak more than 100 words for Gemini 3.5.</span>
-              ) : (
-                <span> Transcript length qualified. Routing to <strong>{preferredModel === 'gemini-3.5' ? 'Gemini 3.5' : 'Gemini 2.5'}</strong>.</span>
-              )}
+          <div className="mt-6 flex flex-col gap-2 max-w-md bg-slate-50 border border-slate-100 rounded-xl p-3 text-slate-500 text-xs text-left">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-indigo-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold text-slate-600">Smart routing active</span>: 
+                {timer < 45 ? (
+                  <span> Record duration &lt; 45s routes directly to <strong>Gemini 2.5</strong>. Record longer than 45s for Gemini 3.5.</span>
+                ) : (
+                  <span> Record duration qualified. Routing to <strong>{preferredModel === 'gemini-3.5' ? 'Gemini 3.5' : 'Gemini 2.5'}</strong>.</span>
+                )}
+              </div>
+            </div>
+            <div className="border-t border-slate-100 mt-1 pt-1.5 pl-6 text-slate-400">
+              <span className="font-semibold text-slate-500">Note</span>: Gemini 3.5 evaluations are limited to 3 per hour. Overlimit requests automatically fall back to Gemini 2.5 (no evaluations are blocked).
             </div>
           </div>
-        </div>
-
-        {/* Transcript review */}
-        <div className="mt-8 border-t border-slate-100 pt-6">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-              <Edit3 className="h-4 w-4 text-indigo-500" />
-              Speech Transcript
-            </h3>
-            {transcript && (
-              <button
-                onClick={() => setIsEditing(!isEditing)}
-                className="text-xs font-bold text-indigo-600 hover:text-indigo-700 cursor-pointer"
-              >
-                {isEditing ? 'Done Editing' : 'Edit Text'}
-              </button>
-            )}
-          </div>
-
-          {isEditing ? (
-            <textarea
-              value={transcript}
-              onChange={(e) => setTranscript(e.target.value)}
-              className="w-full min-h-[120px] rounded-2xl border border-slate-200 bg-white p-4 text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 text-sm leading-relaxed"
-              placeholder="Start speaking, then edit the text here if needed."
-            />
-          ) : (
-            <div className="w-full min-h-[120px] rounded-2xl border border-slate-100 bg-slate-50/50 p-4 text-slate-700 text-sm leading-relaxed text-left whitespace-pre-wrap">
-              {transcript || (
-                <span className="text-slate-400 italic">Your spoken transcript will appear here. You can manually tweak it once you stop recording.</span>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Submit */}
-        {transcript && (
-          <div className="mt-8 flex justify-end">
+        {audioBase64 && !isRecording && (
+          <div className="mt-8 flex justify-end border-t border-slate-100 pt-6">
             <button
               onClick={handleSubmit}
-              disabled={isSubmitting || isRecording}
+              disabled={isSubmitting}
               className="flex items-center gap-2 rounded-2xl bg-indigo-600 px-6 py-4 text-sm font-bold text-white shadow-lg hover:bg-indigo-700 active:scale-98 transition-all cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
             >
               {isSubmitting ? (
-                <span>Generating Evaluation...</span>
+                <span>Analyzing Audio Evaluation...</span>
               ) : (
                 <>
-                  Submit Response
+                  Submit Voice Recording
                   <Send className="h-4 w-4" />
                 </>
               )}
