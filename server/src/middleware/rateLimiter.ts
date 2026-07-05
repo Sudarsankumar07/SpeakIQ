@@ -29,15 +29,13 @@ export async function rateLimiterMiddleware(
     return;
   }
 
-  const { transcript, model } = req.body;
-  if (!transcript) {
-    res.status(400).json({ error: 'Transcript is required' });
-    return;
-  }
+  const { duration, model } = req.body;
 
-  // Calculate word count
-  const wordCount = transcript.trim().split(/\s+/).filter(Boolean).length;
-  console.log(`User transcript has ${wordCount} words.`);
+  // 2. Intelligent Duration-Based Routing & Model Selection
+  // Assume a normal speaking rate of 2.2 words per second.
+  // 45 seconds duration corresponds to approximately 100 words.
+  const estimatedWordCount = Math.floor((duration || 0) * 2.2);
+  console.log(`User recorded duration: ${duration}s. Estimated word count: ${estimatedWordCount} words.`);
 
   // Quota specifications
   const G35_LIMIT = 3;
@@ -71,14 +69,13 @@ export async function rateLimiterMiddleware(
     res.setHeader('X-RateLimit-Limit-Gemini25', G25_LIMIT.toString());
     res.setHeader('X-RateLimit-Remaining-Gemini25', g25Remaining.toString());
 
-    // 2. Intelligent Word Count Routing & Model Selection
     let selectedModel: 'gemini-3.5' | 'gemini-2.5' = (model === 'gemini-2.5') ? 'gemini-2.5' : 'gemini-3.5';
     let fallbackTriggered = false;
     let fallbackReason: string | undefined;
 
-    if (wordCount < 100) {
-      // Shorter responses are automatically routed to the economy model to save premium tokens
-      console.log(`Word count (${wordCount}) < 100. Forcing routing to gemini-2.5.`);
+    if (duration && duration < 45) {
+      // Shorter responses (< 45s) are automatically routed to the economy model to save premium tokens
+      console.log(`Duration (${duration}s) < 45s. Forcing routing to gemini-2.5.`);
       selectedModel = 'gemini-2.5';
       fallbackTriggered = selectedModel !== model && model === 'gemini-3.5';
       if (fallbackTriggered) {
@@ -86,40 +83,23 @@ export async function rateLimiterMiddleware(
       }
     }
 
-    // 3. Quota validations
+    // 3. Quota validations and backend routing (No blocking 429 error returned)
     if (selectedModel === 'gemini-3.5') {
       if (g35Remaining > 0) {
-        // We have quota for Gemini 3.5
         req.evaluationModel = 'gemini-3.5';
         req.fallbackTriggered = false;
       } else {
-        // Gemini 3.5 exhausted! Attempt fallback to Gemini 2.5
-        console.log(`Gemini 3.5 quota exhausted for user ${userId}. Attempting fallback...`);
-        if (g25Remaining > 0) {
-          req.evaluationModel = 'gemini-2.5';
-          req.fallbackTriggered = true;
-          req.fallbackReason = 'USER_LIMIT_EXCEEDED';
-        } else {
-          res.status(429).json({
-            error: 'Rate limit exceeded: You have used all available evaluations for both models this hour.',
-            rateLimits: req.rateLimits,
-          });
-          return;
-        }
+        // Automatically fall back to Gemini 2.5 without blocking
+        console.log(`Gemini 3.5 quota exhausted for user ${userId}. Automatically falling back to Gemini 2.5.`);
+        req.evaluationModel = 'gemini-2.5';
+        req.fallbackTriggered = true;
+        req.fallbackReason = 'USER_LIMIT_EXCEEDED';
       }
     } else {
-      // Selected model is Gemini 2.5
-      if (g25Remaining > 0) {
-        req.evaluationModel = 'gemini-2.5';
-        req.fallbackTriggered = fallbackTriggered;
-        req.fallbackReason = fallbackReason;
-      } else {
-        res.status(429).json({
-          error: 'Rate limit exceeded: You have used all available evaluations for Gemini 2.5 this hour.',
-          rateLimits: req.rateLimits,
-        });
-        return;
-      }
+      // User explicitly selected Gemini 2.5
+      req.evaluationModel = 'gemini-2.5';
+      req.fallbackTriggered = fallbackTriggered;
+      req.fallbackReason = fallbackReason;
     }
 
     next();

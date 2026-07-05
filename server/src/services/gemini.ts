@@ -12,13 +12,14 @@ if (!apiKey) {
 const ai = new GoogleGenAI({ apiKey });
 
 // Map system model identifiers to actual Gemini API model IDs
-// gemini-3.5 maps to gemini-2.5-pro (premium) and gemini-2.5 maps to gemini-2.5-flash (standard)
+// gemini-3.5 maps to gemini-3.5-flash (primary) and gemini-2.5 maps to gemini-2.5-flash (fallback)
 export const MODEL_MAPPING = {
-  'gemini-3.5': process.env.MODEL_35_NAME || 'gemini-2.5-pro',
+  'gemini-3.5': process.env.MODEL_35_NAME || 'gemini-3.5-flash',
   'gemini-2.5': process.env.MODEL_25_NAME || 'gemini-2.5-flash',
 };
 
 export interface EvaluationResult {
+  transcript: string;
   grammar: number;
   vocabulary: number;
   fluency: number;
@@ -36,11 +37,11 @@ export interface EvaluationResult {
 }
 
 /**
- * Run evaluation using the selected model. If primary fails due to rate limits or API errors,
- * automatically attempt fallback to the secondary model.
+ * Run evaluation using the selected model on the raw audio base64 stream.
+ * If primary fails due to rate limits or API errors, automatically attempt fallback to the secondary model.
  */
-export async function evaluateTranscript(
-  transcript: string,
+export async function evaluateAudio(
+  audioBase64: string,
   topic: string,
   preferredModel: 'gemini-3.5' | 'gemini-2.5' = 'gemini-3.5',
   forceFallback: boolean = false
@@ -49,15 +50,20 @@ export async function evaluateTranscript(
   let fallbackTriggered = forceFallback;
   let fallbackReason = forceFallback ? 'USER_LIMIT_EXCEEDED' : undefined;
 
-  const systemInstruction = `
-    You are an expert English language examiner evaluating a user's speaking response.
-    Analyze the speaking transcript based on the topic: "${topic}".
-    Provide a professional assessment with scores (0-100) for Grammar, Vocabulary, Fluency, and an Overall score.
-    Also, identify specific grammar or phrasing errors in the transcript. Suggest improvements with original phrases, corrected versions, and explanation.
-    Provide a fully corrected version of the transcript, and write positive, constructive feedback.
+  const base64DataOnly = audioBase64.split(';base64,').pop() || '';
+
+  const promptText = `
+    Analyze the provided speech audio based on the topic: "${topic}".
+    
+    You MUST perform the following steps:
+    1. Transcribe the spoken audio verbatim. Write down exactly what was said as "transcript".
+    2. Evaluate the transcript and speech. Provide scores (0-100) for Grammar, Vocabulary, Fluency, and an Overall score.
+    3. Identify specific grammar or phrasing errors in the speech. Suggest improvements.
+    4. Provide a fully corrected version of the transcript, and write positive, constructive feedback.
     
     You MUST respond in JSON format matching this schema:
     {
+      "transcript": "the verbatim transcription of the user's spoken audio",
       "grammar": number (0-100),
       "vocabulary": number (0-100),
       "fluency": number (0-100),
@@ -77,18 +83,22 @@ export async function evaluateTranscript(
   // First Attempt
   try {
     const apiModelName = MODEL_MAPPING[modelToUse];
-    console.log(`Evaluating using model: ${modelToUse} (${apiModelName})...`);
+    console.log(`Evaluating using model: ${modelToUse} (${apiModelName}) with raw audio...`);
     
     const response = await ai.models.generateContent({
       model: apiModelName,
       contents: [
         {
-          role: 'user',
-          parts: [{ text: `Topic: ${topic}\n\nTranscript: ${transcript}` }]
+          inlineData: {
+            mimeType: 'audio/webm;codecs=opus',
+            data: base64DataOnly
+          }
+        },
+        {
+          text: promptText
         }
       ],
       config: {
-        systemInstruction,
         responseMimeType: 'application/json',
       }
     });
@@ -121,12 +131,16 @@ export async function evaluateTranscript(
         model: apiModelNameFallback,
         contents: [
           {
-            role: 'user',
-            parts: [{ text: `Topic: ${topic}\n\nTranscript: ${transcript}` }]
+            inlineData: {
+              mimeType: 'audio/webm;codecs=opus',
+              data: base64DataOnly
+            }
+          },
+          {
+            text: promptText
           }
         ],
         config: {
-          systemInstruction,
           responseMimeType: 'application/json',
         }
       });
