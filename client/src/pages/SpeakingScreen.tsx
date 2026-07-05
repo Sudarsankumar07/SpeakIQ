@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { toast } from 'react-hot-toast';
-import { Mic, MicOff, AlertCircle, Send, ArrowLeft, Edit3 } from 'lucide-react';
+import { Mic, MicOff, AlertCircle, Send, ArrowLeft, Edit3, Play, Pause } from 'lucide-react';
 
 // Declare Web Speech API types for TypeScript
 interface IWindow extends Window {
@@ -17,14 +17,20 @@ export const SpeakingScreen: React.FC = () => {
 
   // State Variables
   const [isRecording, setIsRecording] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [timer, setTimer] = useState(0);
   const [preferredModel, setPreferredModel] = useState<'gemini-3.5' | 'gemini-2.5'>('gemini-3.5');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioBase64, setAudioBase64] = useState<string | null>(null);
 
   // Refs
   const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
   const timerIntervalRef = useRef<any>(null);
 
   // Initialize Speech Recognition
@@ -57,13 +63,13 @@ export const SpeakingScreen: React.FC = () => {
     rec.onerror = (event: any) => {
       console.error('Speech recognition error:', event.error);
       if (event.error === 'not-allowed') {
-        toast.error('Microphone access denied. Please check your browser permissions.');
+        toast.error('Microphone access denied. Please check browser permissions.');
         stopRecording();
       }
     };
 
     rec.onend = () => {
-      setIsRecording(false);
+      // SpeechRecognition automatically restarts or stops when paused
     };
 
     recognitionRef.current = rec;
@@ -75,12 +81,15 @@ export const SpeakingScreen: React.FC = () => {
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current);
       }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
     };
   }, []);
 
   // Timer Management
   useEffect(() => {
-    if (isRecording) {
+    if (isRecording && !isPaused) {
       timerIntervalRef.current = setInterval(() => {
         setTimer((prev) => prev + 1);
       }, 1000);
@@ -94,30 +103,98 @@ export const SpeakingScreen: React.FC = () => {
         clearInterval(timerIntervalRef.current);
       }
     };
-  }, [isRecording]);
+  }, [isRecording, isPaused]);
 
-  const startRecording = () => {
+  const startRecording = async () => {
     if (!recognitionRef.current) {
       toast.error('Speech recognition is not initialized.');
       return;
     }
     try {
+      // 1. Initialize Media Recorder
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm;codecs=opus' });
+        const url = URL.createObjectURL(audioBlob);
+        setAudioUrl(url);
+
+        // Convert to Base64
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = () => {
+          const base64data = reader.result as string;
+          setAudioBase64(base64data);
+        };
+      };
+
+      // 2. Clear states and start capturing
       setTranscript('');
+      setAudioUrl(null);
+      setAudioBase64(null);
       setTimer(0);
+      setIsPaused(false);
+
+      mediaRecorder.start();
       recognitionRef.current.start();
       setIsRecording(true);
-      toast.success('Listening... Start speaking!');
-    } catch (err) {
-      console.error('Error starting recognition:', err);
+
+      toast.success('Listening and recording audio... Start speaking!');
+    } catch (err: any) {
+      console.error('Error starting audio recording:', err);
+      toast.error('Could not access microphone: ' + (err.message || 'Permission denied'));
     }
   };
 
-  const stopRecording = () => {
+  const pauseRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.pause();
+    }
     if (recognitionRef.current) {
       recognitionRef.current.stop();
     }
+    setIsPaused(true);
+    toast.success('Recording paused');
+  };
+
+  const resumeRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
+      mediaRecorderRef.current.resume();
+    }
+    if (recognitionRef.current) {
+      recognitionRef.current.start();
+    }
+    setIsPaused(false);
+    toast.success('Recording resumed');
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    
+    // Stop all media tracks to release hardware
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+    }
+
     setIsRecording(false);
-    toast.success('Recording stopped. You can edit your transcript below.');
+    setIsPaused(false);
+    toast.success('Recording stopped. Review your audio below.');
   };
 
   const formatTimer = (timeInSeconds: number) => {
@@ -140,10 +217,10 @@ export const SpeakingScreen: React.FC = () => {
         topic,
         transcript,
         model: preferredModel,
+        audio: audioBase64, // Send the base64 audio string to the backend
       });
 
-      toast.success('Evaluation generated successfully!');
-      // Navigate to report screen
+      toast.success('Evaluation completed!');
       navigate(`/report/${response.data.evaluation.id}`);
     } catch (err: any) {
       const errorMsg = err.response?.data?.error || 'Failed to generate evaluation';
@@ -206,29 +283,44 @@ export const SpeakingScreen: React.FC = () => {
         <div className="flex flex-col items-center justify-center py-6">
           {/* Wave visualizer */}
           <div className="h-12 flex items-center justify-center mb-6">
-            {isRecording ? (
+            {isRecording && !isPaused ? (
               <div className="sound-wave">
                 {[...Array(9)].map((_, i) => (
                   <div key={i} className="sound-wave-bar" />
                 ))}
               </div>
+            ) : isPaused ? (
+              <p className="text-sm text-amber-500 font-bold animate-pulse">Recording Paused</p>
             ) : (
               <p className="text-sm text-slate-400 font-medium">Click the microphone to start recording</p>
             )}
           </div>
 
-          {/* Mic Button */}
-          <button
-            onClick={isRecording ? stopRecording : startRecording}
-            disabled={isSubmitting}
-            className={`h-28 w-28 rounded-full flex items-center justify-center text-white shadow-xl hover:scale-105 transition-all cursor-pointer ${
-              isRecording
-                ? 'bg-red-500 hover:bg-red-600 mic-active-pulse'
-                : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'
-            }`}
-          >
-            {isRecording ? <MicOff className="h-10 w-10 animate-pulse" /> : <Mic className="h-10 w-10" />}
-          </button>
+          {/* Controls Panel */}
+          <div className="flex items-center gap-6">
+            {/* Pause/Resume button */}
+            {isRecording && (
+              <button
+                onClick={isPaused ? resumeRecording : pauseRecording}
+                className="h-14 w-14 rounded-full flex items-center justify-center border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50 transition-all cursor-pointer active:scale-95"
+              >
+                {isPaused ? <Play className="h-5 w-5 text-indigo-600 fill-indigo-600" /> : <Pause className="h-5 w-5" />}
+              </button>
+            )}
+
+            {/* Mic Button */}
+            <button
+              onClick={isRecording ? stopRecording : startRecording}
+              disabled={isSubmitting}
+              className={`h-24 w-24 rounded-full flex items-center justify-center text-white shadow-xl hover:scale-105 transition-all cursor-pointer ${
+                isRecording
+                  ? 'bg-red-500 hover:bg-red-600 mic-active-pulse'
+                  : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'
+              }`}
+            >
+              {isRecording ? <MicOff className="h-8 w-8 animate-pulse" /> : <Mic className="h-8 w-8" />}
+            </button>
+          </div>
 
           {/* Timer and Word Count display */}
           <div className="flex gap-8 mt-8">
@@ -246,6 +338,16 @@ export const SpeakingScreen: React.FC = () => {
               </p>
             </div>
           </div>
+
+          {/* Custom audio playback player */}
+          {audioUrl && !isRecording && (
+            <div className="mt-8 w-full max-w-md bg-indigo-50/30 border border-indigo-100 rounded-2xl p-4 text-center">
+              <span className="text-xs font-bold text-indigo-600 uppercase tracking-wider block mb-2">
+                Listen to Your Practice Response
+              </span>
+              <audio src={audioUrl} controls className="w-full h-8" />
+            </div>
+          )}
 
           {/* Intelligent routing hint info */}
           <div className="mt-6 flex items-start gap-2 max-w-md bg-slate-50 border border-slate-100 rounded-xl p-3 text-slate-500 text-xs">

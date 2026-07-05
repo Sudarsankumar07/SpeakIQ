@@ -27,6 +27,7 @@ async function setupDatabase() {
       suggestions JSONB NOT NULL,
       corrected_transcript TEXT NOT NULL,
       feedback TEXT NOT NULL,
+      audio_data TEXT,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
     );
   `;
@@ -40,6 +41,10 @@ async function setupDatabase() {
     // 2. Create evaluations table
     console.log('Creating evaluations table if it does not exist...');
     await pool.query(createEvaluationsTableQuery);
+    
+    // Run schema migration for existing table
+    console.log('Ensuring audio_data column exists on evaluations table...');
+    await pool.query('ALTER TABLE evaluations ADD COLUMN IF NOT EXISTS audio_data TEXT;');
     console.log('evaluations table is ready.');
 
     console.log('🎉 Database setup completed successfully!');

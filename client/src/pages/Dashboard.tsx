@@ -5,17 +5,30 @@ import api, { getCachedQuotas, type ModelQuotas } from '../services/api';
 import { toast } from 'react-hot-toast';
 import { Mic, BookOpen, Clock, BarChart3, ChevronRight, RefreshCw, Cpu } from 'lucide-react';
 
-const SUGGESTED_TOPICS = [
-  "Describe your dream company and explain why you want to work there.",
-  "Describe an interesting book you have read recently and explain why you liked it.",
-  "Talk about a memorable trip you took and what made it special.",
-  "Explain the impact of social media on communication in modern society."
-];
+const CATEGORIZED_TOPICS: Record<string, string[]> = {
+  "General Ideas": [
+    "Describe an interesting book you have read recently and explain why you liked it.",
+    "Talk about a memorable trip you took and what made it special.",
+    "Describe a hobby or activity you enjoy doing in your spare time."
+  ],
+  "Business & Work": [
+    "Describe your dream company and explain why you want to work there.",
+    "Explain what qualities make a good manager or leader in a workplace.",
+    "Talk about the challenges and benefits of remote work in the modern economy."
+  ],
+  "IELTS Prep": [
+    "Explain the impact of social media on communication in modern society.",
+    "Should art and music classes be compulsory in primary schools? Why or why not?",
+    "Describe a major environmental issue and suggest ways it could be mitigated."
+  ]
+};
 
 export const Dashboard: React.FC = () => {
   const { user, stats, refreshProfile } = useAuth();
   const navigate = useNavigate();
-  const [selectedTopic, setSelectedTopic] = useState(SUGGESTED_TOPICS[0]);
+  const [activeCategory, setActiveCategory] = useState<string>('General Ideas');
+  const [customTopic, setCustomTopic] = useState<string>('');
+  const [selectedTopic, setSelectedTopic] = useState(CATEGORIZED_TOPICS['General Ideas'][0]);
   const [history, setHistory] = useState<any[]>([]);
   const [quotas, setQuotas] = useState<ModelQuotas>(getCachedQuotas());
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
@@ -178,13 +191,38 @@ export const Dashboard: React.FC = () => {
             Choose Speaking Challenge
           </h2>
 
+          {/* Category Selectors */}
+          <div className="flex border-b border-slate-100 pb-3 mb-4 gap-2 overflow-x-auto">
+            {Object.keys(CATEGORIZED_TOPICS).map((cat) => (
+              <button
+                key={cat}
+                onClick={() => {
+                  setActiveCategory(cat);
+                  setSelectedTopic(CATEGORIZED_TOPICS[cat][0]);
+                  setCustomTopic('');
+                }}
+                className={`px-3.5 py-2 text-xs font-bold rounded-xl cursor-pointer transition-all flex-shrink-0 ${
+                  activeCategory === cat
+                    ? 'bg-indigo-50 text-indigo-600 border border-indigo-100 shadow-sm'
+                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
+          {/* Categorized list of topics */}
           <div className="space-y-3 mb-6">
-            {SUGGESTED_TOPICS.map((topic, index) => (
+            {CATEGORIZED_TOPICS[activeCategory].map((topic, index) => (
               <button
                 key={index}
-                onClick={() => setSelectedTopic(topic)}
-                className={`w-full text-left p-4 rounded-2xl border text-sm transition-all cursor-pointer ${
-                  selectedTopic === topic
+                onClick={() => {
+                  setSelectedTopic(topic);
+                  setCustomTopic('');
+                }}
+                className={`w-full text-left p-3.5 rounded-2xl border text-sm transition-all cursor-pointer ${
+                  selectedTopic === topic && !customTopic
                     ? 'border-indigo-600 bg-indigo-50/40 text-indigo-950 font-medium shadow-sm'
                     : 'border-slate-200 bg-white/50 text-slate-700 hover:bg-slate-50'
                 }`}
@@ -192,6 +230,23 @@ export const Dashboard: React.FC = () => {
                 {topic}
               </button>
             ))}
+          </div>
+
+          {/* Custom Topic Input */}
+          <div className="mb-6 border-t border-slate-100 pt-4">
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-2">
+              Or write a Custom Topic
+            </label>
+            <input
+              type="text"
+              value={customTopic}
+              onChange={(e) => {
+                setCustomTopic(e.target.value);
+                setSelectedTopic(e.target.value || CATEGORIZED_TOPICS[activeCategory][0]);
+              }}
+              placeholder="e.g. Talk about your favorite movie and why you recommend it."
+              className="w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 transition-all text-slate-900 shadow-inner"
+            />
           </div>
 
           <div className="bg-indigo-600 rounded-2xl p-6 text-white flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-md shadow-indigo-100">

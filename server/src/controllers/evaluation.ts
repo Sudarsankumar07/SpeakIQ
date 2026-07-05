@@ -5,7 +5,7 @@ import { evaluateTranscript } from '../services/gemini';
 
 export async function createEvaluation(req: RateLimitRequest, res: Response): Promise<void> {
   const userId = req.user?.id;
-  const { transcript, topic } = req.body;
+  const { transcript, topic, audio } = req.body;
   const chosenModel = req.evaluationModel || 'gemini-3.5';
   const fallbackTriggered = req.fallbackTriggered || false;
   const fallbackReason = req.fallbackReason;
@@ -32,8 +32,8 @@ export async function createEvaluation(req: RateLimitRequest, res: Response): Pr
 
     const dbResult = await pool.query(
       `INSERT INTO evaluations 
-        (user_id, topic, transcript, model_used, grammar, vocabulary, fluency, overall, suggestions, corrected_transcript, feedback) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
+        (user_id, topic, transcript, model_used, grammar, vocabulary, fluency, overall, suggestions, corrected_transcript, feedback, audio_data) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
        RETURNING *`,
       [
         userId,
@@ -47,6 +47,7 @@ export async function createEvaluation(req: RateLimitRequest, res: Response): Pr
         JSON.stringify(result.suggestions),
         result.correctedTranscript,
         result.feedback,
+        audio || null, // Stores raw base64 audio URI
       ]
     );
 
@@ -125,3 +126,32 @@ export async function getEvaluationDetails(req: RateLimitRequest, res: Response)
     res.status(500).json({ error: 'Internal server error fetching evaluation details' });
   }
 }
+
+export async function deleteEvaluationAudio(req: RateLimitRequest, res: Response): Promise<void> {
+  const userId = req.user?.id;
+  const { id } = req.params;
+
+  if (!userId) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const result = await pool.query(
+      'UPDATE evaluations SET audio_data = NULL WHERE id = $1 AND user_id = $2 RETURNING id',
+      [id, userId]
+    );
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: 'Evaluation not found or access denied' });
+      return;
+    }
+
+    console.log(`Successfully deleted audio for evaluation ${id}`);
+    res.status(200).json({ message: 'Audio deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting evaluation audio:', error.message);
+    res.status(500).json({ error: 'Internal server error deleting audio' });
+  }
+}
+

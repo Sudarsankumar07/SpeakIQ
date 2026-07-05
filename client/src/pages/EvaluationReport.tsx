@@ -29,6 +29,18 @@ export const EvaluationReport: React.FC = () => {
     if (id) {
       fetchDetails();
     }
+
+    return () => {
+      if (id) {
+        api.delete(`/evaluation/${id}/audio`)
+          .then(() => {
+            console.log(`Audio cleanup completed for evaluation ${id}`);
+          })
+          .catch((err) => {
+            console.error('Audio cleanup error:', err.message);
+          });
+      }
+    };
   }, [id]);
 
   const handlePrint = () => {
@@ -153,6 +165,17 @@ export const EvaluationReport: React.FC = () => {
             <p className="mt-6 text-sm text-slate-500 max-w-xs">
               Analyzed with <strong className="text-slate-800 uppercase">{evaluation.model_used}</strong> on {new Date(evaluation.created_at).toLocaleDateString()}
             </p>
+
+            {evaluation.audio_data ? (
+              <div className="mt-6 w-full border-t border-slate-100 pt-6">
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2">Practice Audio Playback</span>
+                <audio src={evaluation.audio_data} controls className="w-full h-8" />
+              </div>
+            ) : (
+              <div className="mt-6 w-full border-t border-slate-100 pt-4 text-xs text-slate-400 italic">
+                Audio cleared (Session closed)
+              </div>
+            )}
           </div>
 
           {/* Subscores list */}
