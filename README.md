@@ -1,6 +1,6 @@
 # SpeakIQ: AI-Powered English Speaking Evaluation Platform
 
-SpeakIQ is a prototype application designed to help users evaluate and improve their spoken English. Users can choose from categorized topic tracks (General, Business, IELTS Prep) or input custom prompts, record their voice response, and receive detailed AI feedback.
+SpeakIQ is a prototype application designed to help users evaluate and improve their spoken English. Users select categorization topic tracks (General, Business, IELTS Prep) or input custom prompts, record their voice response, verify and edit their verbatim transcription, and receive detailed AI grading.
 
 ---
 
@@ -13,9 +13,10 @@ The application is built using a modern decoupled client-server architecture:
 |          React Client              |
 |   (Vite + Tailwind CSS on Vercel)  |
 +------------------------------------+
-                  |
-                  | HTTP Requests
-                  v
+        |                    ^
+        | 1. Upload Audio    | 2. Return Transcript Text
+        | 3. Submit Text     | 4. Return Final Evaluation Report
+        v                    |
 +------------------------------------+
 |          Express Backend           |
 |      (TypeScript on Render)        |
@@ -30,22 +31,21 @@ The application is built using a modern decoupled client-server architecture:
 ```
 
 ### 1. Frontend (React Single Page Application)
-*   **Technologies**: React, TypeScript, Vite, Tailwind CSS, Lucide icons, Framer Motion.
 *   **Audio Capture**: Uses the browser's native `MediaRecorder` API to capture compressed high-fidelity audio chunks (`audio/webm;codecs=opus`).
-*   **Voice Control Panel**: Supports pause/resume recording, duration timers, and a play/pause review player to preview the recording before submitting.
-*   **Rate Limit display**: Live meters tracking remaining hourly evaluations.
+*   **Target Timer Visuals**: Displays recording duration with helper badges recommending speaking for 45 to 90 seconds (the proxy length for 100–200 words).
+*   **Verbatim Edit Box**: Displays the AI-generated transcript immediately after recording stops. Users can review the transcript, fix misheard words, and see their **exact word count** calculate live (aiming for the green 100–200 word target).
+*   **Model Quota Meters**: Displays live indicators of remaining Gemini 3.5 evaluations in the current hour.
 
 ### 2. Backend (Node.js & Express API)
-*   **Technologies**: Node.js, Express, TypeScript, PG (PostgreSQL client).
 *   **Body Limits**: Configured with a `10mb` payload limit to support base64 audio uploading.
 *   **Intelligent Routing & Quota Middleware**:
     *   **Gemini 3.5 Quota**: Users get 3 Gemini 3.5 evaluations per hour.
     *   **Auto-Fallback**: If the Gemini 3.5 quota is exhausted, subsequent evaluations automatically route to **Gemini 2.5** (unlimited) without blocking the user.
-    *   **Duration Routing**: Recording durations under 45 seconds (estimated to be less than 100 words) route directly to Gemini 2.5 to conserve premium tokens.
+    *   **Exact Word Count Routing**: Since the client submits the verified transcript text, the rate-limiter routes short responses (under 100 words) directly to Gemini 2.5, saving premium Gemini 3.5 credits for qualified, full responses.
 
-### 3. AI Layer (Gemini Multimodal Audio Analysis)
-*   Instead of converting speech-to-text in the browser (which cut off after periods of silence), the backend feeds the raw base64 audio bytes directly to the Gemini API (`generateContent` with `inlineData`).
-*   **Single-Pass Processing**: Gemini transcribes the audio verbatim *and* grades the response (Grammar, Vocabulary, Fluency, suggestions) in a single request, cutting latency and API costs in half.
+### 3. AI Layer (Gemini Two-Step Flow)
+*   **Step 1: Transcription**: When recording stops, the audio is sent to `POST /api/evaluation/transcribe`. Gemini 2.5 Flash transcribes the voice verbatim and returns the plain text.
+*   **Step 2: Text Evaluation**: The finalized transcript text is sent to `POST /api/evaluation`. Gemini evaluates Grammar, Vocabulary, and Fluency, and returns a detailed JSON report. Text-only evaluations consume 90% fewer tokens, reducing costs and response latency.
 *   **Model Failover**: If the primary model (`gemini-3.5-flash`) hits an unexpected Google API rate limit, the service automatically fails over to `gemini-2.5-flash` on the fly.
 
 ### 4. Database & Storage Cleanup (Supabase PostgreSQL)

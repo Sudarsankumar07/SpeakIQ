@@ -23,42 +23,60 @@ Directly invoking the Gemini API synchronously for every user speaking response 
 
 To support 10,000 daily evaluations (avg. 7/minute, peaks of 100+/minute), we separate the upload, auth, processing, and database write layers.
 
+### The Two-Step Processing Flow:
+Instead of running transcription and evaluation in a single synchronous pass (which makes frontend word validation impossible), the system operates in two phases:
+1. **Transcription Phase**: Audio is sent to the backend, transcribed using `gemini-2.5-flash`, and returned to the client. The client displays the text, allowing the user to make corrections and view the **exact word count** (aiming for the 100-200 word target).
+2. **Evaluation Phase**: The client submits the edited transcript and audio. The backend routes the request based on the **exact transcript word count** (routing under 100 words to Gemini 2.5, and 100+ words to Gemini 3.5).
+
 ```
-+------------------+   1. Login/Signup (JWT)   +-----------------------------+
-|  React Frontend  | ------------------------->|   Express App Service       |
-|      Client      |<--------------------------|   (Load Balanced, Auth)     |
-+------------------+   2. Access + Refresh Tkn +-----------------------------+
-    |         ^                                     |                  ^
-    | 3. Request Signed URL (userId scoped)          | 5. Validate +    |
-    | 4. Return Signed URL                           |    Enqueue Job   | 10. Emit
-    |                                                 v                  | (userId channel)
-    v                                        +--------------------+       |
-+------------------+  6. Pull Job            |    Redis Queue     |       |
-|  Storage Bucket  |<------------------------|     (BullMQ)       |       |
-| (Supabase/S3)     |----------------------->|  + Dead Letter Q   |       |
-+------------------+  7. Stream Audio URL    +--------------------+       |
-                                                  |        ^               |
-                                8. Send URI       |        | 9. Verbatim   |
-                                & Prompt          v        |   JSON        |
-                                        +------------------+               |
-                                        | Google Vertex AI |                |
-                                        |   (Gemini 3.5)   |                |
-                                        +------------------+                |
-                                                  |                          |
-                                                  v                          |
-                                        +------------------+                |
-                                        |   PostgreSQL      |----------------+
-                                        |  (via PgBouncer)  |  Supabase Realtime
-                                        +------------------+  channel (per userId)
++------------------+         1. POST /api/evaluation/transcribe (audio)        +-----------------------------+
+|                  | --------------------------------------------------------> |                             |
+|                  | <-------------------------------------------------------- |   Express App Service       |
+|                  |         2. Return plain text transcript                   |      (Load Balanced)        |
+|  React Frontend  |                                                           |                             |
+|      Client      |         3. POST /api/evaluation (transcript + audio)      |                             |
+|                  | --------------------------------------------------------> |                             |
+|                  | <-------------------------------------------------------- |                             |
+|                  |         11. Return JSON Evaluation Scores & Report        |                             |
++------------------+                                                           +-----------------------------+
+                                                                                   |                ^
+                                                                                   | 4. Queue Job   | 9. Retrieve
+                                                                                   v                |
+                                                                        +--------------------+      |
+                                                                        |    Redis Queue     |      |
+                                                                        |     (BullMQ)       |      |
+                                                                        +--------------------+      |
+                                                                                   |                |
+                                                                       5. Pull Job |                |
+                                                                                   v                |
+                                                                        +--------------------+      |
+                                                                        |  Worker Instance   | -----+
+                                                                        +--------------------+
+                                                                           |        ^
+                                                           6. Evaluate     |        | 7. Return JSON
+                                                           Transcript Text v        |    Assessment
+                                                                        +--------------------+
+                                                                        | Google Vertex AI   |
+                                                                        | (Gemini 3.5 / 2.5) |
+                                                                        +--------------------+
+                                                                                   |
+                                                                                   | 8. Save Evaluation Results
+                                                                                   v
+                                                                        +--------------------+
+                                                                        |    PostgreSQL      |
+                                                                        |   (via PgBouncer)  |
+                                                                        +--------------------+
 ```
 
 ### Architectural Breakdown
 
-*   **Authentication & Authorization**: Users sign up/log in via Supabase Auth (or custom JWT with access + refresh tokens). Every presigned upload URL, queue job, and Realtime channel is scoped to the authenticated `userId`, so no user can access another user's job status or audio.
-*   **How Audio is Received**: The frontend requests a temporary write token (**Pre-signed URL**) from the backend. The browser uploads the raw audio file (`.webm`/`.mp3`) directly to an **Object Storage Bucket** (Supabase Storage / AWS S3), bypassing the Express server entirely and keeping server memory near zero. A backend validation step checks file type, size, and duration before a job is queued.
-*   **How Speech is Converted to Text & AI Evaluates**: Gemini's native **multimodal audio-to-text** capability via **Google Vertex AI** transcribes the audio verbatim and evaluates grammar, vocabulary, fluency, and overall score in a **single pass**, returning structured JSON. This removes the cost and latency of a separate STT step.
+*   **Authentication & Authorization**: Users sign up/log in via Supabase Auth (or custom JWT with access + refresh tokens). Every upload, queue job, and report access is scoped to the authenticated `userId`, so no user can access another user's session data.
+*   **How Audio is Received**: The frontend requests a temporary write token (**Pre-signed URL**) from the backend. The browser uploads the raw audio file (`.webm`/`.mp3`) directly to an **Object Storage Bucket** (Supabase Storage / AWS S3), bypassing the Express server entirely and keeping server memory near zero.
+*   **How Speech is Converted to Text & AI Evaluates (Two-Step)**:
+    1. **STT**: Gemini 2.5 Flash acts as a highly scalable speech-to-text API, converting the audio to text.
+    2. **LLM Grading**: The user-validated transcript is sent to Gemini (3.5 or 2.5) for grading. Text-only evaluations are extremely light and consume 90% fewer input tokens than audio evaluations.
 *   **How Results are Stored**: The worker writes the final evaluation (JSON scores, verbatim transcript, suggestions) to **PostgreSQL**, fronted by **PgBouncer** to handle connection spikes. Audio binaries are not stored in the DB — only the file URL, with a lifecycle policy to auto-delete after 24 hours.
-*   **How the Frontend Receives the Response**: The backend immediately returns a `jobId` (`HTTP 202 Accepted`). The client subscribes to a **Supabase Realtime channel** keyed to `userId:jobId`. Once the worker finishes, it writes to Postgres, which triggers a Realtime event pushed straight to the client — no need to manage raw WebSocket server state or a pub/sub adapter across multiple Express instances.
+*   **How the Frontend Receives the Response**: The client polls or listens to a server-sent events (SSE) / WebSocket connection. When the worker finishes, it updates PostgreSQL and emits a completion event to the client.
 
 ---
 
@@ -67,9 +85,8 @@ To support 10,000 daily evaluations (avg. 7/minute, peaks of 100+/minute), we se
 *   **Prompt Tuning and Constrained Outputs**: Output tokens are the most expensive ($1.50/1M vs. $0.075/1M). Instructing Gemini to give feedback in exactly 2–3 sentences cuts response size by ~50%.
 *   **Audio Length Caps**: Cap recordings at **90 seconds** on the frontend to bound input token consumption (audio is billed at ~258 tokens/second).
 *   **Context Caching**: For large rubric/instruction prompts (>32k tokens), Gemini's context caching cuts cached input token cost by 50%.
-*   **Hybrid Model Routing**: Estimate speech length client-side; route short responses (<45 seconds) to **Gemini 2.5 Flash**, reserving **Gemini 3.5 Flash** for longer, higher-value responses.
-*   **Deduplication**: Hash incoming audio files; if a user resubmits an identical clip (e.g. due to a client retry), serve the cached evaluation instead of re-billing Gemini.
-*   **Tiered Model Access**: Free-tier users route only to Gemini 2.5; paid users get 3.5 access — extending the existing duration-based routing logic to subscription tiers.
+*   **Hybrid Model Routing**: Count the exact words in the user-verified transcript. Route short responses (<100 words) directly to **Gemini 2.5 Flash**, reserving **Gemini 3.5 Flash** for longer, higher-value responses.
+*   **Deduplication**: Hash incoming audio files; if a user resubmits an identical clip, serve the cached evaluation instead of re-billing Gemini.
 
 ---
 
@@ -78,24 +95,17 @@ To support 10,000 daily evaluations (avg. 7/minute, peaks of 100+/minute), we se
 If 1,000 users submit at the same moment, the system stays stable via:
 
 1.  **Task Queuing (BullMQ + Redis)**: Express validates the payload and enqueues the job, returning `HTTP 202` in under 50ms — no synchronous wait on Gemini, no server timeout.
-2.  **Idempotency Keys**: Each submission carries a client-generated idempotency key. If the same key is submitted twice (e.g. a client-side retry), the queue recognizes and discards the duplicate instead of creating a second job.
-3.  **Worker Rate Limiting & Backoff Retries**: Workers pull from Redis at a rate that respects Google's RPM limits. On a `429`, jobs use exponential backoff retries rather than dropping data.
-4.  **Dead-Letter Queue (DLQ)**: After a fixed number of failed retries, a job moves to a DLQ instead of disappearing. This triggers an alert for manual review rather than silently losing a user's submission.
-5.  **Circuit Breaker**: If Gemini is fully unavailable, the system trips a circuit breaker and fails fast (returning a "try again shortly" status) instead of retrying all 1,000 jobs into a wall of errors.
-6.  **Per-User Fair Queuing**: Queue priority is balanced per-user so one user submitting many requests can't starve everyone else's jobs.
-7.  **Horizontal Autoscaling**: Workers and Express servers run on autoscaling serverless containers (AWS ECS Fargate / GCP Cloud Run), spinning up new instances as CPU/queue depth rises.
+2.  **Idempotency Keys**: Each submission carries a client-generated idempotency key to reject duplicate retries.
+3.  **Worker Rate Limiting & Backoff Retries**: Workers pull from Redis at a rate that respects Google's RPM limits. On a `429`, jobs use exponential backoff retries.
+4.  **Dead-Letter Queue (DLQ)**: Failed tasks after fixed retries move to a DLQ for alerts and manual diagnostics.
+5.  **Per-User Fair Queuing**: Queue priority is balanced per-user so one user submitting many requests can't starve other users' jobs.
+6.  **Horizontal Autoscaling**: Workers run on autoscaling serverless containers (AWS ECS Fargate / GCP Cloud Run), spinning up new instances as queue depth rises.
 
 ---
 
 ## 5. Backend Engineering Enhancements
 
-Beyond the base implementation, a production-ready backend would add:
-
-*   **Authentication & Authorization**: JWT-based or Supabase Auth login/signup, with all resources (audio, job status, evaluation history) scoped per user.
-*   **Observability**: Structured logging, metrics (Prometheus/Grafana), and error tracking (Sentry) so failures and latency regressions are visible before users report them.
-*   **Multi-Provider Fallback**: If Gemini has an outage, fail over to an alternate provider (e.g. OpenAI Whisper + GPT) for transcription/grading to reduce vendor lock-in.
-*   **Audio Quality Preprocessing**: Use `ffmpeg` server-side to normalize volume, compress size, and filter background noise before sending audio to Gemini, improving transcription accuracy.
-*   **Vector Search for Topic Generation**: Embed past evaluations in a vector store (e.g. PgVector) to recommend personalized speaking tracks based on a user's weakest subscores.
-*   **Semantic Text Matching**: Compare the verbatim transcript against the original topic via embedding distance to add an "Adherence to Topic" subscore.
+*   **Observability**: Structured logging, Prometheus metrics, and error tracking (Sentry) so failures and latency regressions are visible.
+*   **Multi-Provider Fallback**: If Gemini has an outage, fail over to an alternate provider (e.g. OpenAI Whisper + GPT) to reduce vendor lock-in.
+*   **Audio Quality Preprocessing**: Use `ffmpeg` server-side to normalize volume, compress size, and filter background noise before sending audio to Gemini.
 *   **Automated Storage Pruning**: Bucket lifecycle policies delete audio recordings after 24 hours unless explicitly saved, keeping storage costs near zero.
-*   **Load Testing**: Validate the "10k/day, 1k concurrent" target with tools like k6 or Artillery before relying on the design in production.
