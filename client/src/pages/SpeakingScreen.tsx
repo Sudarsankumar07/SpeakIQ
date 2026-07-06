@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { toast } from 'react-hot-toast';
-import { Mic, MicOff, AlertCircle, Send, ArrowLeft, Play, Pause } from 'lucide-react';
+import { Mic, MicOff, AlertCircle, Send, ArrowLeft, Play, Pause, RefreshCw } from 'lucide-react';
 
 export const SpeakingScreen: React.FC = () => {
   const location = useLocation();
@@ -17,6 +17,30 @@ export const SpeakingScreen: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioBase64, setAudioBase64] = useState<string | null>(null);
+  const [transcript, setTranscript] = useState('');
+  const [isTranscribing, setIsTranscribing] = useState(false);
+
+  // Auto-transcribe audio when recorded
+  useEffect(() => {
+    if (audioBase64) {
+      const runTranscription = async () => {
+        setIsTranscribing(true);
+        setTranscript('');
+        try {
+          const response = await api.post('/evaluation/transcribe', {
+            audio: audioBase64
+          });
+          setTranscript(response.data.transcript);
+        } catch (err: any) {
+          console.error(err);
+          toast.error('Failed to auto-transcribe speaking audio. Feel free to type or re-record.');
+        } finally {
+          setIsTranscribing(false);
+        }
+      };
+      runTranscription();
+    }
+  }, [audioBase64]);
 
   // Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -138,8 +162,8 @@ export const SpeakingScreen: React.FC = () => {
   };
 
   const handleSubmit = async () => {
-    if (!audioBase64) {
-      toast.error('Please record your response first');
+    if (!transcript.trim()) {
+      toast.error('Please record and wait for transcription first');
       return;
     }
 
@@ -147,9 +171,9 @@ export const SpeakingScreen: React.FC = () => {
     try {
       const response = await api.post('/evaluation', {
         topic,
+        transcript,
         model: preferredModel,
         audio: audioBase64, // Send base64 audio
-        duration: timer,    // Send recorded duration in seconds
       });
 
       toast.success('Evaluation completed!');
@@ -255,11 +279,24 @@ export const SpeakingScreen: React.FC = () => {
           </div>
 
           {/* Timer display */}
-          <div className="flex gap-8 mt-8">
+          <div className="flex flex-col items-center gap-2 mt-8">
             <div className="text-center">
               <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Duration</span>
               <p className="text-3xl font-black text-slate-800 mt-1">{formatTimer(timer)}</p>
             </div>
+            {isRecording && (
+              <span className={`text-xs font-semibold px-3 py-1 rounded-full mt-1 border transition-all ${
+                timer >= 45 && timer <= 90
+                  ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                  : 'bg-slate-50 text-slate-400 border-slate-100'
+              }`}>
+                {timer < 45 
+                  ? `Keep speaking (Aim for 45s to 90s for 100-200 words)` 
+                  : timer <= 90 
+                    ? `Optimal length reached! (100-200 words target)` 
+                    : `Over recommended length (May exceed 200 words)`}
+              </span>
+            )}
           </div>
 
           {/* Custom audio playback player */}
@@ -272,17 +309,54 @@ export const SpeakingScreen: React.FC = () => {
             </div>
           )}
 
+          {/* AI Transcription Review & Edit Panel */}
+          {isTranscribing && (
+            <div className="mt-6 w-full max-w-md bg-indigo-50/10 border border-indigo-100/50 rounded-2xl p-5 text-center flex flex-col items-center justify-center gap-3">
+              <RefreshCw className="h-5 w-5 animate-spin text-indigo-600" />
+              <span className="text-xs font-semibold text-slate-500">Generating AI Transcription...</span>
+            </div>
+          )}
+
+          {transcript && !isTranscribing && (
+            <div className="mt-6 w-full max-w-md text-left">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Verbatim Transcript (You can edit)</span>
+                {(() => {
+                  const wc = transcript.trim().split(/\s+/).filter(Boolean).length;
+                  return (
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${
+                      wc >= 100 && wc <= 200
+                        ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                        : 'bg-amber-50 text-amber-600 border-amber-100'
+                    }`}>
+                      {wc} words {wc >= 100 && wc <= 200 ? '(Optimal ✓)' : '(Target: 100-200)'}
+                    </span>
+                  );
+                })()}
+              </div>
+              <textarea
+                value={transcript}
+                onChange={(e) => setTranscript(e.target.value)}
+                className="w-full h-32 rounded-2xl border border-slate-200 p-4 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-100 bg-white/70 shadow-inner resize-none leading-relaxed"
+                placeholder="Speech transcript will appear here. Edit if needed."
+              />
+            </div>
+          )}
+
           {/* Intelligent routing hint info */}
-          <div className="mt-6 flex flex-col gap-2 max-w-md bg-slate-50 border border-slate-100 rounded-xl p-3 text-slate-500 text-xs text-left">
+          <div className="mt-6 flex flex-col gap-2 max-w-md w-full bg-slate-50 border border-slate-100 rounded-xl p-3 text-slate-500 text-xs text-left">
             <div className="flex items-start gap-2">
               <AlertCircle className="h-4 w-4 text-indigo-500 flex-shrink-0 mt-0.5" />
               <div>
                 <span className="font-semibold text-slate-600">Smart routing active</span>: 
-                {timer < 45 ? (
-                  <span> Record duration &lt; 45s routes directly to <strong>Gemini 2.5</strong>. Record longer than 45s for Gemini 3.5.</span>
-                ) : (
-                  <span> Record duration qualified. Routing to <strong>{preferredModel === 'gemini-3.5' ? 'Gemini 3.5' : 'Gemini 2.5'}</strong>.</span>
-                )}
+                {(() => {
+                  const wc = transcript.trim().split(/\s+/).filter(Boolean).length;
+                  if (wc < 100) {
+                    return <span> Transcript &lt; 100 words automatically routes directly to <strong>Gemini 2.5</strong>. Speak 100+ words to qualify for Gemini 3.5.</span>;
+                  } else {
+                    return <span> Word count ({wc} words) qualified. Routing to <strong>{preferredModel === 'gemini-3.5' ? 'Gemini 3.5' : 'Gemini 2.5'}</strong>.</span>;
+                  }
+                })()}
               </div>
             </div>
             <div className="border-t border-slate-100 mt-1 pt-1.5 pl-6 text-slate-400">
@@ -292,7 +366,7 @@ export const SpeakingScreen: React.FC = () => {
         </div>
 
         {/* Submit */}
-        {audioBase64 && !isRecording && (
+        {transcript && !isRecording && !isTranscribing && (
           <div className="mt-8 flex justify-end border-t border-slate-100 pt-6">
             <button
               onClick={handleSubmit}
@@ -300,7 +374,7 @@ export const SpeakingScreen: React.FC = () => {
               className="flex items-center gap-2 rounded-2xl bg-indigo-600 px-6 py-4 text-sm font-bold text-white shadow-lg hover:bg-indigo-700 active:scale-98 transition-all cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
             >
               {isSubmitting ? (
-                <span>Analyzing Audio Evaluation...</span>
+                <span>Analyzing Evaluation...</span>
               ) : (
                 <>
                   Submit Voice Recording

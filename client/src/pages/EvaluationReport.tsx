@@ -306,8 +306,22 @@ export const EvaluationReport: React.FC = () => {
                   </h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
-                      <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Your Speech Transcript</span>
-                      <div className="mt-2 bg-slate-50 rounded-2xl p-4 text-sm text-slate-700 leading-relaxed border border-slate-100 whitespace-pre-wrap">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Your Speech Transcript</span>
+                        {(() => {
+                          const wc = evaluation.transcript ? evaluation.transcript.trim().split(/\s+/).filter(Boolean).length : 0;
+                          return (
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${
+                              wc >= 100 && wc <= 200
+                                ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                                : 'bg-amber-50 text-amber-600 border-amber-100'
+                            }`}>
+                              {wc} words {wc >= 100 && wc <= 200 ? '(Optimal ✓)' : '(Target: 100-200)'}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      <div className="bg-slate-50 rounded-2xl p-4 text-sm text-slate-700 leading-relaxed border border-slate-100 whitespace-pre-wrap">
                         {evaluation.transcript}
                       </div>
                     </div>

@@ -19,7 +19,6 @@ export const MODEL_MAPPING = {
 };
 
 export interface EvaluationResult {
-  transcript: string;
   grammar: number;
   vocabulary: number;
   fluency: number;
@@ -37,11 +36,39 @@ export interface EvaluationResult {
 }
 
 /**
- * Run evaluation using the selected model on the raw audio base64 stream.
- * If primary fails due to rate limits or API errors, automatically attempt fallback to the secondary model.
+ * Transcribe raw audio to text using Gemini 2.5 Flash
  */
-export async function evaluateAudio(
-  audioBase64: string,
+export async function transcribeAudio(audioBase64: string): Promise<string> {
+  const base64DataOnly = audioBase64.split(';base64,').pop() || '';
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [
+        {
+          inlineData: {
+            mimeType: 'audio/webm;codecs=opus',
+            data: base64DataOnly
+          }
+        },
+        {
+          text: 'Transcribe this spoken English audio verbatim. Output only the verbatim transcription text, no extra commentary.'
+        }
+      ]
+    });
+
+    return response.text || '';
+  } catch (error: any) {
+    console.error('Error transcribing audio:', error.message || error);
+    throw new Error('Failed to transcribe spoken response. Please try again.');
+  }
+}
+
+/**
+ * Evaluate the transcript text against the speaking topic.
+ */
+export async function evaluateTranscript(
+  transcript: string,
   topic: string,
   preferredModel: 'gemini-3.5' | 'gemini-2.5' = 'gemini-3.5',
   forceFallback: boolean = false
@@ -50,20 +77,15 @@ export async function evaluateAudio(
   let fallbackTriggered = forceFallback;
   let fallbackReason = forceFallback ? 'USER_LIMIT_EXCEEDED' : undefined;
 
-  const base64DataOnly = audioBase64.split(';base64,').pop() || '';
-
-  const promptText = `
-    Analyze the provided speech audio based on the topic: "${topic}".
-    
-    You MUST perform the following steps:
-    1. Transcribe the spoken audio verbatim. Write down exactly what was said as "transcript".
-    2. Evaluate the transcript and speech. Provide scores (0-100) for Grammar, Vocabulary, Fluency, and an Overall score.
-    3. Identify specific grammar or phrasing errors in the speech. Suggest improvements.
-    4. Provide a fully corrected version of the transcript, and write positive, constructive feedback.
+  const systemInstruction = `
+    You are an expert English language examiner evaluating a user's speaking response.
+    Analyze the speaking transcript based on the topic: "${topic}".
+    Provide a professional assessment with scores (0-100) for Grammar, Vocabulary, Fluency, and an Overall score.
+    Also, identify specific grammar or phrasing errors in the transcript. Suggest improvements with original phrases, corrected versions, and explanation.
+    Provide a fully corrected version of the transcript, and write positive, constructive feedback.
     
     You MUST respond in JSON format matching this schema:
     {
-      "transcript": "the verbatim transcription of the user's spoken audio",
       "grammar": number (0-100),
       "vocabulary": number (0-100),
       "fluency": number (0-100),
@@ -83,22 +105,18 @@ export async function evaluateAudio(
   // First Attempt
   try {
     const apiModelName = MODEL_MAPPING[modelToUse];
-    console.log(`Evaluating using model: ${modelToUse} (${apiModelName}) with raw audio...`);
+    console.log(`Evaluating using model: ${modelToUse} (${apiModelName})...`);
     
     const response = await ai.models.generateContent({
       model: apiModelName,
       contents: [
         {
-          inlineData: {
-            mimeType: 'audio/webm;codecs=opus',
-            data: base64DataOnly
-          }
-        },
-        {
-          text: promptText
+          role: 'user',
+          parts: [{ text: `Topic: ${topic}\n\nTranscript: ${transcript}` }]
         }
       ],
       config: {
+        systemInstruction,
         responseMimeType: 'application/json',
       }
     });
@@ -131,16 +149,12 @@ export async function evaluateAudio(
         model: apiModelNameFallback,
         contents: [
           {
-            inlineData: {
-              mimeType: 'audio/webm;codecs=opus',
-              data: base64DataOnly
-            }
-          },
-          {
-            text: promptText
+            role: 'user',
+            parts: [{ text: `Topic: ${topic}\n\nTranscript: ${transcript}` }]
           }
         ],
         config: {
+          systemInstruction,
           responseMimeType: 'application/json',
         }
       });

@@ -29,13 +29,11 @@ export async function rateLimiterMiddleware(
     return;
   }
 
-  const { duration, model } = req.body;
+  const { transcript, model } = req.body;
 
-  // 2. Intelligent Duration-Based Routing & Model Selection
-  // Assume a normal speaking rate of 2.2 words per second.
-  // 45 seconds duration corresponds to approximately 100 words.
-  const estimatedWordCount = Math.floor((duration || 0) * 2.2);
-  console.log(`User recorded duration: ${duration}s. Estimated word count: ${estimatedWordCount} words.`);
+  // Calculate actual word count of transcript
+  const wordCount = transcript ? transcript.trim().split(/\s+/).filter(Boolean).length : 0;
+  console.log(`User transcript length: ${wordCount} words.`);
 
   // Quota specifications
   const G35_LIMIT = 3;
@@ -47,8 +45,8 @@ export async function rateLimiterMiddleware(
       `SELECT 
         COUNT(CASE WHEN model_used = 'gemini-3.5' THEN 1 END)::int as g35_count,
         COUNT(CASE WHEN model_used = 'gemini-2.5' THEN 1 END)::int as g25_count
-       FROM evaluations 
-       WHERE user_id = $1 AND created_at > NOW() - INTERVAL '1 hour'`,
+      FROM evaluations 
+      WHERE user_id = $1 AND created_at > NOW() - INTERVAL '1 hour'`,
       [userId]
     );
 
@@ -73,9 +71,9 @@ export async function rateLimiterMiddleware(
     let fallbackTriggered = false;
     let fallbackReason: string | undefined;
 
-    if (duration && duration < 45) {
-      // Shorter responses (< 45s) are automatically routed to the economy model to save premium tokens
-      console.log(`Duration (${duration}s) < 45s. Forcing routing to gemini-2.5.`);
+    if (wordCount && wordCount < 100) {
+      // Shorter responses (< 100 words) are automatically routed to the economy model to save premium tokens
+      console.log(`Word count (${wordCount}) < 100. Forcing routing to gemini-2.5.`);
       selectedModel = 'gemini-2.5';
       fallbackTriggered = selectedModel !== model && model === 'gemini-3.5';
       if (fallbackTriggered) {
